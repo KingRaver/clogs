@@ -1,0 +1,53 @@
+```
+clogs/
+│
+├── .env                        # Environment variables (should not be in git)
+├── README.md                   # Project overview and setup instructions
+├── __init__.py                 # Python package initialization
+├── architecture.txt            # Project structure documentation
+│
+├── data/                       # Data directory
+│   └── crypto_history.db       # Database file for crypto history (should not be in git)
+│
+├── get-pip.py                  # Python package management script
+├── login_page_debug.png        # Debug screenshot for login page
+│
+├── logs/                       # Logging directory
+│   ├── analysis/               # Analysis logs directory
+│   │   └── market_analysis.log # Market-related log file
+│   │
+│   ├── claude.log              # Claude interaction logs
+│   ├── claude_api.log          # Claude API logs
+│   ├── coingecko.log           # CoinGecko logs
+│   ├── coingecko_api.log       # CoinGecko API logs
+│   ├── eth_btc_correlation.log # Ethereum/Bitcoin correlation logs
+│   ├── google_sheets_api.log   # Google Sheets API logs
+│   └── third.log               # Additional log file
+│
+├── requirements.txt            # Project dependencies
+│
+└── src/                        # Source code directory
+    ├── __init__.py             # Package initialization
+    ├── __pycache__/            # Python bytecode cache (should not be in git)
+    ├── bot.py                  # Main bot implementation
+    ├── coingecko_handler.py    # CoinGecko API handler
+    ├── config.py               # Configuration management
+    ├── config.pyc              # Compiled Python file (should not be in git)
+    ├── database.py             # Database operations
+    ├── meme_phrases.py         # Meme-related phrases
+    ├── mood_config.py          # Mood configuration settings
+    │
+    └── utils/                  # Utility modules
+        ├── __init__.py         # Utility package initialization
+        ├── __init__.pyc        # Compiled initialization file (should not be in git)
+        ├── __pycache__/        # Python bytecode cache directory (should not be in git)
+        │   ├── __init__.cpython-311.pyc
+        │   ├── browser.cpython-311.pyc
+        │   ├── logger.cpython-311.pyc
+        │   └── sheets_handler.cpython-311.pyc
+        ├── browser.py          # Browser-related utilities
+        ├── browser.pyc         # Compiled browser utilities (should not be in git)
+        ├── logger.py           # Logging utilities
+        ├── logger.pyc          # Compiled logger utilities (should not be in git)
+        └── sheets_handler.py   # Spreadsheet handling utilities
+```
