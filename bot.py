@@ -116,6 +116,292 @@ class KaitoAnalysisBot:
         except Exception as e:
             logger.log_error(f"Historical Volume Data - {chain}", str(e))
             return []
+            
+    def _is_duplicate_analysis(self, new_tweet: str, last_posts: List[str]) -> bool:
+        """Check if analysis is a duplicate with relaxed similarity detection"""
+        try:
+            # For testing: Log that we're using relaxed duplicate detection
+            logger.logger.info("Using relaxed duplicate detection settings")
+            
+            # Only check for exact duplicates in the database
+            # This still stores all analyses but is less restrictive on what's considered a duplicate
+            try:
+                # Check for exact matches only in recent database entries (last 3 hours)
+                exact_match = self.config.db.check_exact_content_match(new_tweet)
+                if exact_match:
+                    logger.logger.info("Exact duplicate detected in database (relaxed check)")
+                    return True
+            except Exception as e:
+                # If the method doesn't exist, fall back to normal check but with a time limit
+                # Only consider database entries from the last 2 hours
+                recent_only = True
+                hours_threshold = 1  # Only check duplicates from last hour
+                if hasattr(self.config.db, 'check_content_similarity_with_timeframe'):
+                    is_duplicate = self.config.db.check_content_similarity_with_timeframe(
+                        new_tweet, hours=hours_threshold
+                    )
+                    if is_duplicate:
+                        logger.logger.info(f"Similar content detected in database within last {hours_threshold} hours")
+                        return True
+                else:
+                    # Skip database check if we can't limit by time
+                    pass
+                
+            # Check for exact matches in recent posts (still important to prevent double-posting)
+            for post in last_posts:
+                if post.strip() == new_tweet.strip():
+                    logger.logger.info("Exact duplicate detected in recent posts")
+                    return True
+            
+            # Use more relaxed fuzzy matching (increase similarity threshold to 90%)
+            new_content = new_tweet.split("\n\n#")[0].lower() if "\n\n#" in new_tweet else new_tweet.lower()
+            
+            for post in last_posts:
+                post_content = post.split("\n\n#")[0].lower() if "\n\n#" in post else post.lower()
+                
+                # Calculate a simple similarity score based on word overlap
+                new_words = set(new_content.split())
+                post_words = set(post_content.split())
+                
+                if new_words and post_words:
+                    overlap = len(new_words.intersection(post_words))
+                    similarity = overlap / max(len(new_words), len(post_words))
+                    
+                    # Increased threshold from 0.7 to 0.9 (90% similar)
+                    if similarity > 0.9:
+                        logger.logger.info(f"Near-duplicate detected with {similarity:.2f} similarity (relaxed threshold)")
+                        return True
+                    elif similarity > 0.7:
+                        # Log when we would have previously detected a duplicate but now allowing it
+                        logger.logger.info(f"Post with {similarity:.2f} similarity allowed (would have been blocked before)")
+                    
+            return False
+            
+        except Exception as e:
+            logger.log_error("Duplicate Check", str(e))
+            # For testing purposes, allow posts even if duplicate check fails
+            logger.logger.warning("Duplicate check failed, allowing post for testing")
+            return False
+            
+    def _login_to_twitter(self) -> bool:
+        """Log into Twitter with enhanced verification"""
+        try:
+            logger.logger.info("Starting Twitter login")
+            self.browser.driver.set_page_load_timeout(45)
+            self.browser.driver.get('https://twitter.com/login')
+            time.sleep(5)
+
+            username_field = WebDriverWait(self.browser.driver, 20).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[autocomplete='username']"))
+            )
+            username_field.click()
+            time.sleep(1)
+            username_field.send_keys(self.config.TWITTER_USERNAME)
+            time.sleep(2)
+
+            next_button = WebDriverWait(self.browser.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//span[text()='Next']"))
+            )
+            next_button.click()
+            time.sleep(3)
+
+            password_field = WebDriverWait(self.browser.driver, 20).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='password']"))
+            )
+            password_field.click()
+            time.sleep(1)
+            password_field.send_keys(self.config.TWITTER_PASSWORD)
+            time.sleep(2)
+
+            login_button = WebDriverWait(self.browser.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//span[text()='Log in']"))
+            )
+            login_button.click()
+            time.sleep(10) 
+
+            return self._verify_login()
+
+        except Exception as e:
+            logger.log_error("Twitter Login", str(e))
+            return False
+
+    def _verify_login(self) -> bool:
+        """Verify Twitter login success"""
+        try:
+            verification_methods = [
+                lambda: WebDriverWait(self.browser.driver, 30).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="SideNav_NewTweet_Button"]'))
+                ),
+                lambda: WebDriverWait(self.browser.driver, 30).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="AppTabBar_Profile_Link"]'))
+                ),
+                lambda: any(path in self.browser.driver.current_url 
+                          for path in ['home', 'twitter.com/home'])
+            ]
+            
+            for method in verification_methods:
+                try:
+                    if method():
+                        return True
+                except:
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            logger.log_error("Login Verification", str(e))
+            return False
+            
+    def _post_analysis(self, tweet_text: str) -> bool:
+        """Post analysis to Twitter with robust button handling"""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                self.browser.driver.get('https://twitter.com/compose/tweet')
+                time.sleep(3)
+                
+                text_area = WebDriverWait(self.browser.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="tweetTextarea_0"]'))
+                )
+                text_area.click()
+                time.sleep(1)
+                
+                text_parts = tweet_text.split('#')
+                text_area.send_keys(text_parts[0])
+                time.sleep(1)
+                for part in text_parts[1:]:
+                    text_area.send_keys(f'#{part}')
+                    time.sleep(0.5)
+                
+                time.sleep(2)
+
+                post_button = None
+                button_locators = [
+                    (By.CSS_SELECTOR, '[data-testid="tweetButton"]'),
+                    (By.XPATH, "//div[@role='button'][contains(., 'Post')]"),
+                    (By.XPATH, "//span[text()='Post']")
+                ]
+
+                for locator in button_locators:
+                    try:
+                        post_button = WebDriverWait(self.browser.driver, 5).until(
+                            EC.element_to_be_clickable(locator)
+                        )
+                        if post_button:
+                            break
+                    except:
+                        continue
+
+                if post_button:
+                    self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", post_button)
+                    time.sleep(1)
+                    self.browser.driver.execute_script("arguments[0].click();", post_button)
+                    time.sleep(5)
+                    logger.logger.info("Tweet posted successfully")
+                    return True
+                else:
+                    logger.logger.error("Could not find post button")
+                    retry_count += 1
+                    time.sleep(2)
+                    
+            except Exception as e:
+                logger.logger.error(f"Tweet posting error, attempt {retry_count + 1}: {str(e)}")
+                retry_count += 1
+                wait_time = retry_count * 10
+                logger.logger.warning(f"Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                continue
+        
+        logger.log_error("Tweet Creation", "Maximum retries reached")
+        return False
+        
+    def _cleanup(self) -> None:
+        """Cleanup resources"""
+        try:
+            if self.browser:
+                logger.logger.info("Closing browser...")
+                try:
+                    self.browser.close_browser()
+                    time.sleep(1)
+                except Exception as e:
+                    logger.logger.warning(f"Error during browser close: {str(e)}")
+                    
+            if self.config:
+                self.config.cleanup()
+                
+            logger.log_shutdown()
+        except Exception as e:
+            logger.log_error("Cleanup", str(e))
+
+    def _get_last_posts(self) -> List[str]:
+        """Get last 10 posts to check for duplicates"""
+        try:
+            self.browser.driver.get(f'https://twitter.com/{self.config.TWITTER_USERNAME}')
+            time.sleep(3)
+            
+            posts = WebDriverWait(self.browser.driver, 10).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, '[data-testid="tweetText"]'))
+            )
+            
+            return [post.text for post in posts[:10]]
+        except Exception as e:
+            logger.log_error("Get Last Posts", str(e))
+            return []
+
+    def _get_crypto_data(self) -> Optional[Dict[str, Any]]:
+        """Fetch KAITO and Layer 1 data from CoinGecko with retries"""
+        try:
+            params = {
+                **self.config.get_coingecko_params(),
+                'ids': ','.join(self.target_chains.values()), 
+                'sparkline': True 
+            }
+            
+            data = self.coingecko.get_market_data(params)
+            if not data:
+                logger.logger.error("Failed to fetch market data from CoinGecko")
+                return None
+                
+            formatted_data = {
+                coin['symbol'].upper(): {
+                    'current_price': coin['current_price'],
+                    'volume': coin['total_volume'],
+                    'price_change_percentage_24h': coin['price_change_percentage_24h'],
+                    'sparkline': coin.get('sparkline_in_7d', {}).get('price', []),
+                    'market_cap': coin['market_cap'],
+                    'market_cap_rank': coin['market_cap_rank'],
+                    'total_supply': coin.get('total_supply'),
+                    'max_supply': coin.get('max_supply'),
+                    'circulating_supply': coin.get('circulating_supply'),
+                    'ath': coin.get('ath'),
+                    'ath_change_percentage': coin.get('ath_change_percentage')
+                } for coin in data
+            }
+            
+            # Log API usage statistics
+            stats = self.coingecko.get_request_stats()
+            logger.logger.debug(
+                f"CoinGecko API stats - Daily requests: {stats['daily_requests']}, "
+                f"Failed: {stats['failed_requests']}, Cache size: {stats['cache_size']}"
+            )
+            
+            # Store market data in database
+            for chain, chain_data in formatted_data.items():
+                self.config.db.store_market_data(chain, chain_data)
+            
+            # Check if KAITO data is present
+            if 'KAITO' not in formatted_data:
+                logger.log_error("Crypto Data", f"Missing data for KAITO")
+                return None
+                
+            logger.logger.info(f"Successfully fetched crypto data for {', '.join(formatted_data.keys())}")
+            return formatted_data
+                
+        except Exception as e:
+            logger.log_error("CoinGecko API", str(e))
+            return None
 
     def _analyze_volume_trend(self, current_volume: float, historical_data: List[Dict[str, Any]]) -> Tuple[float, str]:
         """
@@ -298,57 +584,174 @@ class KaitoAnalysisBot:
             logger.log_error("KAITO vs Layer1 Analysis", str(e))
             return {}
 
-    def start(self) -> None:
-        """Main bot execution loop"""
+    def _calculate_correlations(self, market_data: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate KAITO correlations with Layer 1s"""
         try:
-            retry_count = 0
-            max_setup_retries = 3
+            kaito_data = market_data['KAITO']
             
-            while retry_count < max_setup_retries:
-                if not self.browser.initialize_driver():
-                    retry_count += 1
-                    logger.logger.warning(f"Browser initialization attempt {retry_count} failed, retrying...")
-                    time.sleep(10)
-                    continue
-                    
-                if not self._login_to_twitter():
-                    retry_count += 1
-                    logger.logger.warning(f"Twitter login attempt {retry_count} failed, retrying...")
-                    time.sleep(15)
-                    continue
-                    
-                break
+            correlations = {}
             
-            if retry_count >= max_setup_retries:
-                raise Exception("Failed to initialize bot after maximum retries")
-
-            logger.logger.info("Bot initialized successfully")
-
-            while True:
-                try:
-                    self._run_analysis_cycle()
-                    
-                    # Calculate sleep time until next regular check
-                    time_since_last = (datetime.now() - self.last_check_time).total_seconds()
-                    sleep_time = max(0, self.config.BASE_INTERVAL - time_since_last)
-                    
-                    logger.logger.debug(f"Sleeping for {sleep_time:.1f}s until next check")
-                    time.sleep(sleep_time)
-                    
-                    self.last_check_time = datetime.now()
-                    
-                except Exception as e:
-                    logger.log_error("Analysis Cycle", str(e), exc_info=True)
-                    time.sleep(60)  # Shorter sleep on error
+            # Calculate correlation with each Layer 1
+            for l1 in self.reference_tokens:
+                if l1 not in market_data:
                     continue
-
-        except KeyboardInterrupt:
-            logger.logger.info("Bot stopped by user")
+                    
+                l1_data = market_data[l1]
+                
+                # Price correlation (simplified)
+                price_correlation = abs(
+                    kaito_data['price_change_percentage_24h'] - 
+                    l1_data['price_change_percentage_24h']
+                ) / max(abs(kaito_data['price_change_percentage_24h']), 
+                       abs(l1_data['price_change_percentage_24h']))
+                
+                # Volume correlation (simplified)
+                volume_correlation = abs(
+                    (kaito_data['volume'] - l1_data['volume']) / 
+                    max(kaito_data['volume'], l1_data['volume'])
+                )
+                
+                correlations[f'price_correlation_{l1}'] = 1 - price_correlation
+                correlations[f'volume_correlation_{l1}'] = 1 - volume_correlation
+            
+            # Calculate average L1 correlations
+            price_correlations = [v for k, v in correlations.items() if 'price_correlation_' in k]
+            volume_correlations = [v for k, v in correlations.items() if 'volume_correlation_' in k]
+            
+            correlations['avg_price_correlation'] = statistics.mean(price_correlations) if price_correlations else 0
+            correlations['avg_volume_correlation'] = statistics.mean(volume_correlations) if volume_correlations else 0
+            
+            # Store correlation data
+            self.config.db.store_correlation_analysis(correlations)
+            
+            logger.logger.debug(
+                f"KAITO correlations calculated - Avg Price: {correlations['avg_price_correlation']:.2f}, "
+                f"Avg Volume: {correlations['avg_volume_correlation']:.2f}"
+            )
+            
+            return correlations
+            
         except Exception as e:
-            logger.log_error("Bot Execution", str(e))
-        finally:
-            self._cleanup()
+            logger.log_error("Correlation Calculation", str(e))
+            return {
+                'avg_price_correlation': 0.0,
+                'avg_volume_correlation': 0.0
+            }
 
+    def _track_prediction(self, prediction: Dict[str, Any], relevant_chains: List[str]) -> None:
+        """Track predictions for future spicy callbacks"""
+        MAX_PREDICTIONS = 20  
+        current_prices = {chain: prediction.get(f'{chain.upper()}_price', 0) for chain in relevant_chains if f'{chain.upper()}_price' in prediction}
+        
+        self.past_predictions.append({
+            'timestamp': datetime.now(),
+            'prediction': prediction['analysis'],
+            'prices': current_prices,
+            'sentiment': prediction['sentiment'],
+            'outcome': None
+        })
+        
+        # Keep only predictions from the last 24 hours, up to MAX_PREDICTIONS
+        self.past_predictions = [p for p in self.past_predictions 
+                               if (datetime.now() - p['timestamp']).total_seconds() < 86400]
+        
+        # Trim to max predictions if needed
+        if len(self.past_predictions) > MAX_PREDICTIONS:
+            self.past_predictions = self.past_predictions[-MAX_PREDICTIONS:]
+            
+    def _validate_past_prediction(self, prediction: Dict[str, Any], current_prices: Dict[str, float]) -> str:
+        """Check if a past prediction was hilariously wrong"""
+        sentiment_map = {
+            'bullish': 1,
+            'bearish': -1,
+            'neutral': 0,
+            'volatile': 0,
+            'recovering': 0.5
+        }
+        
+        wrong_chains = []
+        for chain, old_price in prediction['prices'].items():
+            if chain in current_prices and old_price > 0:
+                price_change = ((current_prices[chain] - old_price) / old_price) * 100
+                
+                # Get sentiment for this chain
+                chain_sentiment_key = chain.upper() if chain.upper() in prediction['sentiment'] else chain
+                chain_sentiment_value = prediction['sentiment'].get(chain_sentiment_key)
+                
+                # Handle nested dictionary structure
+                if isinstance(chain_sentiment_value, dict) and 'mood' in chain_sentiment_value:
+                    chain_sentiment = sentiment_map.get(chain_sentiment_value['mood'], 0)
+                else:
+                    chain_sentiment = sentiment_map.get(chain_sentiment_value, 0)
+                
+                # A prediction is wrong if:
+                # 1. Bullish but price dropped more than 2%
+                # 2. Bearish but price rose more than 2%
+                if (chain_sentiment * price_change) < -2:
+                    wrong_chains.append(chain)
+        
+        return 'wrong' if wrong_chains else 'right'
+        
+    def _get_spicy_callback(self, current_prices: Dict[str, float]) -> Optional[str]:
+        """Generate witty callbacks to past terrible predictions"""
+        recent_predictions = [p for p in self.past_predictions 
+                            if p['timestamp'] > (datetime.now() - timedelta(hours=24))]
+        
+        if not recent_predictions:
+            return None
+            
+        for pred in recent_predictions:
+            if pred['outcome'] is None:
+                pred['outcome'] = self._validate_past_prediction(pred, current_prices)
+                
+        wrong_predictions = [p for p in recent_predictions if p['outcome'] == 'wrong']
+        if wrong_predictions:
+            worst_pred = wrong_predictions[-1]
+            time_ago = int((datetime.now() - worst_pred['timestamp']).total_seconds() / 3600)
+            
+            # If time_ago is 0, set it to 1 to avoid awkward phrasing
+            if time_ago == 0:
+                time_ago = 1
+            
+            # KAITO-specific callbacks
+            callbacks = [
+                f"(Unlike my galaxy-brain take {time_ago}h ago about {worst_pred['prediction'].split('.')[0]}... this time I'm sure!)",
+                f"(Looks like my {time_ago}h old prediction about KAITO aged like milk. But trust me bro!)",
+                f"(That awkward moment when your {time_ago}h old KAITO analysis was completely wrong... but this one's different!)",
+                f"(My KAITO trading bot would be down bad after that {time_ago}h old take. Good thing I'm just an analyst!)",
+                f"(Excuse the {time_ago}h old miss on KAITO. Even the best crypto analysts are wrong sometimes... just not usually THIS wrong!)"
+            ]
+            return callbacks[hash(str(datetime.now())) % len(callbacks)]
+            
+        return None
+        
+    def _format_tweet_analysis(self, analysis: str, crypto_data: Dict[str, Any]) -> str:
+        """Format analysis for Twitter with KAITO-specific hashtags"""
+        # KAITO specific hashtags
+        hashtags = "#KAITO #CryptoAnalysis #SmartMoney"
+        
+        # Add volume-related hashtag if appropriate
+        if 'volume' in analysis.lower() or 'accumulation' in analysis.lower():
+            hashtags += " #VolumeAnalysis"
+        
+        # Add L1 comparison hashtag if appropriate
+        if 'layer 1' in analysis.lower() or 'l1' in analysis.lower():
+            hashtags += " #Layer1"
+        
+        # Add momentum hashtag if price movement is significant
+        if 'surge' in analysis.lower() or 'pump' in analysis.lower() or 'jump' in analysis.lower():
+            hashtags += " #Momentum"
+        elif 'crash' in analysis.lower() or 'dump' in analysis.lower() or 'plunge' in analysis.lower():
+            hashtags += " #CryptoAlert"
+        
+        tweet = f"{analysis}\n\n{hashtags}"
+        max_length = self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 20
+        if len(tweet) > max_length:
+            analysis = analysis[:max_length-len(hashtags)-23] + "..."
+            tweet = f"{analysis}\n\n{hashtags}"
+        
+        return tweet
+        
     def _should_post_update(self, new_data: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Determine if we should post an update based on market changes
@@ -439,113 +842,6 @@ class KaitoAnalysisBot:
             logger.logger.debug("No triggers activated, skipping update")
 
         return should_post, trigger_reason
-
-    def _get_crypto_data(self) -> Optional[Dict[str, Any]]:
-        """Fetch KAITO and Layer 1 data from CoinGecko with retries"""
-        try:
-            params = {
-                **self.config.get_coingecko_params(),
-                'ids': ','.join(self.target_chains.values()), 
-                'sparkline': True 
-            }
-            
-            data = self.coingecko.get_market_data(params)
-            if not data:
-                logger.logger.error("Failed to fetch market data from CoinGecko")
-                return None
-                
-            formatted_data = {
-                coin['symbol'].upper(): {
-                    'current_price': coin['current_price'],
-                    'volume': coin['total_volume'],
-                    'price_change_percentage_24h': coin['price_change_percentage_24h'],
-                    'sparkline': coin.get('sparkline_in_7d', {}).get('price', []),
-                    'market_cap': coin['market_cap'],
-                    'market_cap_rank': coin['market_cap_rank'],
-                    'total_supply': coin.get('total_supply'),
-                    'max_supply': coin.get('max_supply'),
-                    'circulating_supply': coin.get('circulating_supply'),
-                    'ath': coin.get('ath'),
-                    'ath_change_percentage': coin.get('ath_change_percentage')
-                } for coin in data
-            }
-            
-            # Log API usage statistics
-            stats = self.coingecko.get_request_stats()
-            logger.logger.debug(
-                f"CoinGecko API stats - Daily requests: {stats['daily_requests']}, "
-                f"Failed: {stats['failed_requests']}, Cache size: {stats['cache_size']}"
-            )
-            
-            # Store market data in database
-            for chain, chain_data in formatted_data.items():
-                self.config.db.store_market_data(chain, chain_data)
-            
-            # Check if KAITO data is present
-            if 'KAITO' not in formatted_data:
-                logger.log_error("Crypto Data", f"Missing data for KAITO")
-                return None
-                
-            logger.logger.info(f"Successfully fetched crypto data for {', '.join(formatted_data.keys())}")
-            return formatted_data
-                
-        except Exception as e:
-            logger.log_error("CoinGecko API", str(e))
-            return None
-
-    def _calculate_correlations(self, market_data: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate KAITO correlations with Layer 1s"""
-        try:
-            kaito_data = market_data['KAITO']
-            
-            correlations = {}
-            
-            # Calculate correlation with each Layer 1
-            for l1 in self.reference_tokens:
-                if l1 not in market_data:
-                    continue
-                    
-                l1_data = market_data[l1]
-                
-                # Price correlation (simplified)
-                price_correlation = abs(
-                    kaito_data['price_change_percentage_24h'] - 
-                    l1_data['price_change_percentage_24h']
-                ) / max(abs(kaito_data['price_change_percentage_24h']), 
-                       abs(l1_data['price_change_percentage_24h']))
-                
-                # Volume correlation (simplified)
-                volume_correlation = abs(
-                    (kaito_data['volume'] - l1_data['volume']) / 
-                    max(kaito_data['volume'], l1_data['volume'])
-                )
-                
-                correlations[f'price_correlation_{l1}'] = 1 - price_correlation
-                correlations[f'volume_correlation_{l1}'] = 1 - volume_correlation
-            
-            # Calculate average L1 correlations
-            price_correlations = [v for k, v in correlations.items() if 'price_correlation_' in k]
-            volume_correlations = [v for k, v in correlations.items() if 'volume_correlation_' in k]
-            
-            correlations['avg_price_correlation'] = statistics.mean(price_correlations) if price_correlations else 0
-            correlations['avg_volume_correlation'] = statistics.mean(volume_correlations) if volume_correlations else 0
-            
-            # Store correlation data
-            self.config.db.store_correlation_analysis(correlations)
-            
-            logger.logger.debug(
-                f"KAITO correlations calculated - Avg Price: {correlations['avg_price_correlation']:.2f}, "
-                f"Avg Volume: {correlations['avg_volume_correlation']:.2f}"
-            )
-            
-            return correlations
-            
-        except Exception as e:
-            logger.log_error("Correlation Calculation", str(e))
-            return {
-                'avg_price_correlation': 0.0,
-                'avg_volume_correlation': 0.0
-            }
 
     def _analyze_market_sentiment(self, crypto_data: Dict[str, Any], trigger_type: str) -> Optional[str]:
         """Generate KAITO-specific market analysis with focus on volume and smart money"""
@@ -711,13 +1007,19 @@ class KaitoAnalysisBot:
                 
                 formatted_tweet = self._format_tweet_analysis(analysis, crypto_data)
                 
-                # Check for content similarity
-                if self.config.db.check_content_similarity(formatted_tweet):
-                    logger.logger.info("Similar content detected, retrying analysis")
-                    retry_count += 1
-                    continue
+                # For testing purposes, we'll skip the database similarity check 
+                # and just check for exact duplicates in recent posts
+                skip_similarity_check = True
+                similarity_detected = False
                 
-                # Store the content if it's unique
+                if not skip_similarity_check:
+                    similarity_detected = self.config.db.check_content_similarity(formatted_tweet)
+                    if similarity_detected:
+                        logger.logger.info("Similar content detected, retrying analysis")
+                        retry_count += 1
+                        continue
+                
+                # Store the content if we proceed (always store for data collection)
                 self.config.db.store_posted_content(
                     content=formatted_tweet,
                     sentiment={'KAITO': kaito_mood},
@@ -726,6 +1028,11 @@ class KaitoAnalysisBot:
                                       'volume': kaito_data['volume']}},
                     meme_phrases={'KAITO': meme_context}
                 )
+                
+                # For testing: Log that we're allowing a post that might be similar
+                if similarity_detected:
+                    logger.logger.info("Allowing potentially similar content for testing purposes")
+                
                 return formatted_tweet
                 
             except Exception as e:
@@ -738,3 +1045,112 @@ class KaitoAnalysisBot:
         
         logger.log_error("Market Analysis", "Maximum retries reached")
         return None
+
+    def _run_analysis_cycle(self) -> None:
+        """Run analysis and posting cycle with focus on KAITO"""
+        try:
+            market_data = self._get_crypto_data()
+            if not market_data:
+                logger.logger.error("Failed to fetch market data")
+                return
+                
+            # Make sure KAITO data is available
+            if 'KAITO' not in market_data:
+                logger.logger.error("KAITO data not available")
+                return
+                
+            should_post, trigger_type = self._should_post_update(market_data)
+            
+            if should_post:
+                logger.logger.info(f"Starting KAITO analysis cycle - Trigger: {trigger_type}")
+                analysis = self._analyze_market_sentiment(market_data, trigger_type)
+                if not analysis:
+                    logger.logger.error("Failed to generate KAITO analysis")
+                    return
+                    
+                last_posts = self._get_last_posts()
+                if not self._is_duplicate_analysis(analysis, last_posts):
+                    if self._post_analysis(analysis):
+                        logger.logger.info(f"Successfully posted KAITO analysis - Trigger: {trigger_type}")
+                        
+                        # Store additional smart money metrics
+                        if 'KAITO' in market_data:
+                            smart_money = self._analyze_smart_money_indicators(market_data['KAITO'])
+                            self.config.db.store_smart_money_indicators('KAITO', smart_money)
+                            
+                            # Log smart money indicators
+                            logger.logger.debug(f"Smart money indicators stored for KAITO: {smart_money}")
+                            
+                            # Store Layer 1 comparison data
+                            vs_layer1 = self._analyze_kaito_vs_layer1s(market_data)
+                            if vs_layer1:
+                                self.config.db.store_kaito_layer1_comparison(vs_layer1)
+                                logger.logger.debug(f"KAITO vs Layer 1 comparison stored")
+                    else:
+                        logger.logger.error("Failed to post KAITO analysis")
+                else:
+                    logger.logger.info("Skipping duplicate KAITO analysis")
+            else:
+                logger.logger.debug("No significant KAITO changes detected, skipping post")
+                
+        except Exception as e:
+            logger.log_error("KAITO Analysis Cycle", str(e))
+
+    def start(self) -> None:
+        """Main bot execution loop"""
+        try:
+            retry_count = 0
+            max_setup_retries = 3
+            
+            while retry_count < max_setup_retries:
+                if not self.browser.initialize_driver():
+                    retry_count += 1
+                    logger.logger.warning(f"Browser initialization attempt {retry_count} failed, retrying...")
+                    time.sleep(10)
+                    continue
+                    
+                if not self._login_to_twitter():
+                    retry_count += 1
+                    logger.logger.warning(f"Twitter login attempt {retry_count} failed, retrying...")
+                    time.sleep(15)
+                    continue
+                    
+                break
+            
+            if retry_count >= max_setup_retries:
+                raise Exception("Failed to initialize bot after maximum retries")
+
+            logger.logger.info("Bot initialized successfully")
+
+            while True:
+                try:
+                    self._run_analysis_cycle()
+                    
+                    # Calculate sleep time until next regular check
+                    time_since_last = (datetime.now() - self.last_check_time).total_seconds()
+                    sleep_time = max(0, self.config.BASE_INTERVAL - time_since_last)
+                    
+                    logger.logger.debug(f"Sleeping for {sleep_time:.1f}s until next check")
+                    time.sleep(sleep_time)
+                    
+                    self.last_check_time = datetime.now()
+                    
+                except Exception as e:
+                    logger.log_error("Analysis Cycle", str(e), exc_info=True)
+                    time.sleep(60)  # Shorter sleep on error
+                    continue
+
+        except KeyboardInterrupt:
+            logger.logger.info("Bot stopped by user")
+        except Exception as e:
+            logger.log_error("Bot Execution", str(e))
+        finally:
+            self._cleanup()
+
+
+if __name__ == "__main__":
+    try:
+        bot = KaitoAnalysisBot()
+        bot.start()
+    except Exception as e:
+        logger.log_error("Bot Startup", str(e))
