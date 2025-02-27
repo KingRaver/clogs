@@ -727,31 +727,135 @@ class KaitoAnalysisBot:
         
     def _format_tweet_analysis(self, analysis: str, crypto_data: Dict[str, Any]) -> str:
         """Format analysis for Twitter with KAITO-specific hashtags"""
-        # KAITO specific hashtags
-        hashtags = "#KAITO #CryptoAnalysis #SmartMoney"
+        analysis_lower = analysis.lower()
         
-        # Add volume-related hashtag if appropriate
-        if 'volume' in analysis.lower() or 'accumulation' in analysis.lower():
-            hashtags += " #VolumeAnalysis"
+        # 1. STATIC HASHTAGS - Always included
+        base_hashtags = "#KAITO #CryptoAnalysis #SmartMoney #KAITOToken #Crypto"
         
-        # Add L1 comparison hashtag if appropriate
-        if 'layer 1' in analysis.lower() or 'l1' in analysis.lower():
-            hashtags += " #Layer1"
+        # Store all additional hashtags
+        additional_hashtags = []
         
-        # Add momentum hashtag if price movement is significant
-        if 'surge' in analysis.lower() or 'pump' in analysis.lower() or 'jump' in analysis.lower():
-            hashtags += " #Momentum"
-        elif 'crash' in analysis.lower() or 'dump' in analysis.lower() or 'plunge' in analysis.lower():
-            hashtags += " #CryptoAlert"
+        # 2. CONDITIONAL HASHTAGS - Based on content analysis
+        # Volume and accumulation related
+        if 'volume' in analysis_lower or 'accumulation' in analysis_lower:
+            additional_hashtags.append("#VolumeAnalysis")
         
-        tweet = f"{analysis}\n\n{hashtags}"
+        # L1 comparison related
+        if 'layer 1' in analysis_lower or 'l1' in analysis_lower:
+            additional_hashtags.append("#Layer1")
+        
+        # Price movement related
+        if any(term in analysis_lower for term in ['surge', 'pump', 'jump', 'rocket', 'moon', 'soar']):
+            additional_hashtags.append("#Momentum")
+        elif any(term in analysis_lower for term in ['crash', 'dump', 'plunge', 'drop', 'fall', 'dip']):
+            additional_hashtags.append("#CryptoAlert")
+        
+        # Technical analysis terminology
+        if any(term in analysis_lower for term in ['divergence', 'resistance', 'support', 'pattern', 'indicator', 'signal']):
+            additional_hashtags.append("#TechnicalAnalysis")
+        
+        # Market sentiment terminology
+        if 'bullish' in analysis_lower:
+            additional_hashtags.append("#Bullish")
+        elif 'bearish' in analysis_lower:
+            additional_hashtags.append("#Bearish")
+        
+        # Smart money and institutional terminology
+        if any(term in analysis_lower for term in ['institution', 'smart money', 'whales', 'big players', 'accumulation']):
+            additional_hashtags.append("#InstitutionalMoney")
+        
+        # Breakout and trend terminology
+        if any(term in analysis_lower for term in ['breakout', 'trend', 'reversal', 'consolidation']):
+            additional_hashtags.append("#TrendWatch")
+            
+        # Correlation terminology
+        if any(term in analysis_lower for term in ['correlation', 'decoupling', 'coupled']):
+            additional_hashtags.append("#MarketCorrelation")
+            
+        # 3. ROTATING HASHTAG SETS - Change with each post for variety
+        rotating_hashtag_sets = [
+            "#DeFi #Altcoins #CryptoGems",
+            "#CryptoInvestor #AltSeason #UndervaluedGems",
+            "#CryptoTrader #TradingSignals #MarketMoves",
+            "#BlockchainTech #TokenEconomy #CryptoCommunity",
+            "#Web3 #NewCrypto #EmergingAssets",
+            "#TokenInvestor #CryptoAlpha #NextBigThing",
+            "#DigitalAssets #CryptoBulls #MarketAlpha",
+            "#DeepDive #CryptoResearch #TokenAnalysis"
+        ]
+        
+        # Select a rotating set based on time and trigger
+        # Use a hash of the date to select which set to use
+        hashtag_set_index = hash(datetime.now().strftime("%Y-%m-%d-%H")) % len(rotating_hashtag_sets)
+        rotating_hashtags = rotating_hashtag_sets[hashtag_set_index]
+        
+        # 4. MARKET CONDITION-BASED HASHTAGS - Based on actual data
+        kaito_data = crypto_data.get('KAITO', {})
+        
+        if kaito_data:
+            # Outperformance hashtags
+            vs_layer1 = self._analyze_kaito_vs_layer1s(crypto_data)
+            if vs_layer1.get('outperforming_layer1s', False):
+                additional_hashtags.append("#Outperforming")
+                if vs_layer1.get('vs_layer1_avg_change', 0) > 10:  # If outperforming by more than 10%
+                    additional_hashtags.append("#MassiveOutperformance")
+            
+            # Volume-based hashtags
+            smart_money = self._analyze_smart_money_indicators(kaito_data)
+            if smart_money.get('abnormal_volume', False):
+                additional_hashtags.append("#VolumeSpike")
+            if smart_money.get('volume_z_score', 0) > 2.5:  # High Z-score
+                additional_hashtags.append("#UnusualVolume")
+            if smart_money.get('stealth_accumulation', False):
+                additional_hashtags.append("#StealthMode")
+            
+            # Price action hashtags
+            price_change = kaito_data.get('price_change_percentage_24h', 0)
+            if price_change > 15:
+                additional_hashtags.append("#PriceSurge")
+            elif price_change > 5:
+                additional_hashtags.append("#PriceAlert")
+            elif price_change < -10:
+                additional_hashtags.append("#PriceDrop")
+                
+            # Mood-based hashtags (determine from price change)
+            if price_change > 8:
+                additional_hashtags.append("#BullMarket")
+            elif price_change < -8:
+                additional_hashtags.append("#BearMarket")
+            elif -3 <= price_change <= 3:
+                additional_hashtags.append("#SidewaysMarket")
+                
+        # Combine all hashtags while respecting Twitter's constraints
+        # Start with base hashtags, then add up to 5 additional hashtags
+        # Finally add the rotating set if there's room
+        
+        # First prioritize and deduplicate additional hashtags
+        additional_hashtags = list(set(additional_hashtags))  # Remove duplicates
+        
+        # Prioritize the most important ones (first 5)
+        selected_additional = additional_hashtags[:min(5, len(additional_hashtags))]
+        
+        # Combine hashtags
+        all_hashtags = f"{base_hashtags} {' '.join(selected_additional)}"
+        
+        # Add rotating hashtags if there's space
+        if len(all_hashtags) + len(rotating_hashtags) + 1 <= 100:  # Stay under ~100 chars for hashtags
+            all_hashtags = f"{all_hashtags} {rotating_hashtags}"
+        
+        # Construct the final tweet
+        tweet = f"{analysis}\n\n{all_hashtags}"
+        
+        # Make sure to respect Twitter's character limit
         max_length = self.config.TWEET_CONSTRAINTS['HARD_STOP_LENGTH'] - 20
         if len(tweet) > max_length:
-            analysis = analysis[:max_length-len(hashtags)-23] + "..."
-            tweet = f"{analysis}\n\n{hashtags}"
+            # Trim the analysis part, not the hashtags
+            chars_to_trim = len(tweet) - max_length
+            trimmed_analysis = analysis[:len(analysis) - chars_to_trim - 3] + "..."
+            tweet = f"{trimmed_analysis}\n\n{all_hashtags}"
         
         return tweet
-        
+
     def _should_post_update(self, new_data: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Determine if we should post an update based on market changes
@@ -847,6 +951,18 @@ class KaitoAnalysisBot:
         """Generate KAITO-specific market analysis with focus on volume and smart money"""
         max_retries = 3
         retry_count = 0
+        
+        # Define rotating focus areas for more varied analyses
+        focus_areas = [
+            "Focus on volume patterns, smart money movements, and how KAITO is performing relative to Layer 1s.",
+            "Emphasize technical indicators showing money flow from Layer 1s to KAITO. Pay special attention to volume-to-price divergence.",
+            "Analyze accumulation patterns and Layer 1 capital rotation. Look for subtle signs of institutional interest in KAITO.",
+            "Examine volume preceding price action in both KAITO and Layer 1s. Note any leading indicators.",
+            "Highlight the relationship between KAITO's price action and significant Layer 1 volume changes.",
+            "Investigate potential smart money positioning ahead of market moves. Note any anomalous volume signatures.",
+            "Focus on recent volume clusters and their impact on price stability. Look for divergence patterns.",
+            "Analyze how KAITO's volatility profile compares to Layer 1s and what this suggests about market sentiment."
+        ]
         
         while retry_count < max_retries:
             try:
@@ -944,6 +1060,29 @@ class KaitoAnalysisBot:
                     l1_context += f"\nKAITO outperforming Layer 1 average by {vs_layer1['vs_layer1_avg_change']:.1f}%"
                 else:
                     l1_context += f"\nKAITO underperforming Layer 1 average by {abs(vs_layer1['vs_layer1_avg_change']):.1f}%"
+                
+                # NEW: Layer 1 volume flow technical analysis
+                layer1_total_volume = sum([data['volume'] for sym, data in crypto_data.items() if sym in self.reference_tokens and sym in crypto_data])
+                l1_volume_ratio = (kaito_data['volume'] / layer1_total_volume * 100) if layer1_total_volume > 0 else 0
+                
+                capital_rotation = "Yes" if vs_layer1.get('outperforming_layer1s', False) and smart_money.get('volume_vs_daily_avg', 0) > 0.2 else "No"
+                
+                l1_selling_pattern = "Detected" if vs_layer1.get('vs_layer1_volume_growth', 0) < 0 and volume_trend['change_pct'] > 5 else "Not detected"
+                
+                technical_context = f"""
+Layer 1 Volume Flow Analysis:
+- KAITO/Layer 1 volume ratio: {l1_volume_ratio:.2f}%
+- Potential capital rotation: {capital_rotation}
+- Layer 1 selling KAITO buying patterns: {l1_selling_pattern}
+- Relative strength vs ETH: {correlations.get('price_correlation_ETH', 0):.2f}
+- Relative strength vs SOL: {correlations.get('price_correlation_SOL', 0):.2f}
+"""
+
+                # Select a focus area using a deterministic but varied approach
+                # Use a combination of date, hour and trigger type to ensure variety
+                focus_seed = f"{datetime.now().date()}_{datetime.now().hour}_{trigger_type}"
+                focus_index = hash(focus_seed) % len(focus_areas)
+                selected_focus = focus_areas[focus_index]
 
                 prompt = f"""Write a witty market analysis focusing on KAITO token with attention to volume changes and smart money movements. Format as a single paragraph. Market data:
                 
@@ -978,6 +1117,8 @@ class KaitoAnalysisBot:
                 ATH Distance:
                 - KAITO: {kaito_mood['ath_distance']:.1f}%
                 
+                {technical_context}
+                
                 KAITO-specific context:
                 - Meme: {meme_context}
                 
@@ -985,7 +1126,7 @@ class KaitoAnalysisBot:
                 
                 Past Context: {callback if callback else 'None'}
                 
-                Note: Focus on volume patterns, smart money movements, and how KAITO is performing relative to Layer 1s. Keep the analysis fresh and varied. Avoid repetitive phrases."""
+                Note: {selected_focus} Keep the analysis fresh and varied. Avoid repetitive phrases."""
                 
                 logger.logger.debug("Sending analysis request to Claude")
                 response = self.claude_client.messages.create(
